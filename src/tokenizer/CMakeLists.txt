@@ -22,6 +22,4 @@ set_target_properties(${_NAME}
 
 target_compile_options(${_NAME} PRIVATE ${IREE_DEFAULT_COPTS})
 
-add_dependencies(iree-sample-deps ${_NAME})
-
 add_subdirectory(test)

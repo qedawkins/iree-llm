@@ -1,10 +1,13 @@
-// Copyright 2023 The IREE Authors
-//
-// Licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+// Copyright (c) 2023 Advanced Micro Devices, Inc. All rights reserved.
+// Licensed under the MIT License.
+
+#include <sentencepiece_processor.h>
 
 #include <cstdio>
+#include <functional>
+#include <string>
+#include <string_view>
+#include <vector>
 
 #include "iree/base/api.h"
 #include "iree/hal/api.h"
@@ -28,75 +31,85 @@
 // The descriptor that is registered at startup defines how to manage the
 // lifetime of the type (such as which destruction function is called, if any).
 // See ref.h for more information and additional utilities.
-typedef struct iree_custom_string_t {
+typedef struct iree_tokenizer_spm_t {
   // Must be the first field; used to track the reference count of the object.
   iree_vm_ref_object_t ref_object;
-  // Allocator the string data was allocated from.
-  // Ideally pools and nested allocators would be used to avoid needing to store
-  // the allocator with every object.
   iree_allocator_t allocator;
-  // Non-NUL-terminated string value.
-  iree_string_view_t value;
-} iree_custom_string_t;
+  // SentencePiece class for storing the internal tokenizer state.
+  sentencepiece::SentencePieceProcessor* tokenizer;
+} iree_tokenizer_spm_t;
 
 // Runtime type descriptor for the !custom.string describing how to manage it
 // and destroy it. The type ID is allocated at runtime and does not need to
 // match the compiler ID.
-IREE_VM_DECLARE_TYPE_ADAPTERS(iree_custom_string, iree_custom_string_t);
-IREE_VM_DEFINE_TYPE_ADAPTERS(iree_custom_string, iree_custom_string_t);
+IREE_VM_DECLARE_TYPE_ADAPTERS(iree_tokenizer_spm, iree_tokenizer_spm_t);
+IREE_VM_DEFINE_TYPE_ADAPTERS(iree_tokenizer_spm, iree_tokenizer_spm_t);
 
-// Creates a new !custom.string object with a copy of the given |value|.
+// Creates a new !tokenizer.spm object with a copy of the given |value|.
 // Applications could use this and any other methods we wanted to expose to
 // interop with the loaded VM modules - such as passing in/out the objects.
 // We don't need this for the demo but creating the custom object, appending it
 // to the invocation input list, and then consuming it in the compiled module
 // is straightforward.
-static iree_status_t iree_custom_string_create(
-    iree_string_view_t value, iree_allocator_t allocator,
-    iree_custom_string_t** out_string) {
-  IREE_ASSERT_ARGUMENT(out_string);
-  // Note that we allocate the string and the string value together.
-  iree_custom_string_t* string = NULL;
+static iree_status_t iree_tokenizer_spm_create(
+    std::string_view string, iree_allocator_t allocator,
+    iree_tokenizer_spm_t** out_tokenizer) {
+  IREE_ASSERT_ARGUMENT(out_tokenizer);
+  iree_tokenizer_spm_t* wrapped_tokenizer = NULL;
   IREE_RETURN_IF_ERROR(iree_allocator_malloc(
-      allocator, sizeof(*string) + value.size, (void**)&string));
-  string->ref_object.counter = IREE_ATOMIC_VAR_INIT(1);
-  string->allocator = allocator;
-  string->value.data = ((const char*)string) + sizeof(iree_custom_string_t);
-  string->value.size = value.size;
-  memcpy((void*)string->value.data, value.data, string->value.size);
-  *out_string = string;
+      allocator, sizeof(*wrapped_tokenizer), (void**)&wrapped_tokenizer));
+  wrapped_tokenizer->ref_object.counter = IREE_ATOMIC_VAR_INIT(1);
+  wrapped_tokenizer->allocator = allocator;
+
+  sentencepiece::SentencePieceProcessor* tokenizer =
+      new sentencepiece::SentencePieceProcessor();
+  const auto spmStatus = tokenizer->LoadFromSerializedProto(string);
+  if (!spmStatus.ok()) {
+    return iree_make_status(IREE_STATUS_UNKNOWN,
+                            "Failed to load tokenizer module ");
+  }
+  if (!tokenizer->SetEncodeExtraOptions("bos:eos").ok()) {
+    return iree_make_status(IREE_STATUS_UNKNOWN,
+                            "Failed to set extra tokenizer encode options");
+  }
+  if (!tokenizer->SetDecodeExtraOptions("bos:eos").ok()) {
+    return iree_make_status(IREE_STATUS_UNKNOWN,
+                            "Failed to set extra tokenizer decode options");
+  }
+  *out_tokenizer = wrapped_tokenizer;
   return iree_ok_status();
 }
 
-static void iree_custom_string_destroy(void* ptr) {
-  iree_custom_string_t* string = (iree_custom_string_t*)ptr;
-  iree_allocator_free(string->allocator, ptr);
+static void iree_tokenizer_spm_destroy(void* ptr) {
+  iree_tokenizer_spm_t* wrapped_tokenizer = (iree_tokenizer_spm_t*)ptr;
+  delete wrapped_tokenizer->tokenizer;
+  iree_allocator_free(wrapped_tokenizer->allocator, ptr);
 }
 
-static iree_vm_ref_type_descriptor_t iree_custom_string_descriptor_storage = {
+static iree_vm_ref_type_descriptor_t iree_tokenizer_spm_descriptor_storage = {
     0};
 
-// Registers types provided by the custom module.
+// Registers types provided by the tokenizer module.
 // We must call this before any of our types can be resolved.
-static iree_status_t iree_custom_module_basic_register_types(
+static iree_status_t iree_tokenizer_basic_register_types(
     iree_vm_instance_t* instance) {
-  iree_custom_string_descriptor_storage.destroy = iree_custom_string_destroy;
-  iree_custom_string_descriptor_storage.type_name = IREE_SV("custom.string");
-  iree_custom_string_descriptor_storage.offsetof_counter =
-      offsetof(iree_custom_string_t, ref_object.counter) /
+  iree_tokenizer_spm_descriptor_storage.destroy = iree_tokenizer_spm_destroy;
+  iree_tokenizer_spm_descriptor_storage.type_name = IREE_SV("tokenizer.spm");
+  iree_tokenizer_spm_descriptor_storage.offsetof_counter =
+      offsetof(iree_tokenizer_spm_t, ref_object.counter) /
       IREE_VM_REF_COUNTER_ALIGNMENT;
   return iree_vm_instance_register_type(instance,
-                                        &iree_custom_string_descriptor_storage,
-                                        &iree_custom_string_registration);
+                                        &iree_tokenizer_spm_descriptor_storage,
+                                        &iree_tokenizer_spm_registration);
 }
 
 // Unregisters types previously registered.
 // In dynamic modules it's critical that types are unregistered before the
 // library is unloaded.
-static void iree_custom_module_basic_unregister_types(
+static void iree_tokenizer_basic_unregister_types(
     iree_vm_instance_t* instance) {
   iree_vm_instance_unregister_type(instance,
-                                   &iree_custom_string_descriptor_storage);
+                                   &iree_tokenizer_spm_descriptor_storage);
 }
 
 //===----------------------------------------------------------------------===//
@@ -113,39 +126,67 @@ using namespace iree;
 // Thread-compatible; the runtime will not issue multiple calls at the same
 // time using the same state. If the implementation uses external threads then
 // it must synchronize itself.
-class CustomModuleState final {
+class TokenizerModuleState final {
  public:
-  explicit CustomModuleState(iree_allocator_t host_allocator)
+  explicit TokenizerModuleState(iree_allocator_t host_allocator)
       : host_allocator_(host_allocator) {}
-  ~CustomModuleState() = default;
+  ~TokenizerModuleState() = default;
 
-  // Creates a new string with a copy of the given string data.
-  // No NUL terminator is required.
-  StatusOr<vm::ref<iree_custom_string_t>> StringFromTensor(
-      vm::ref<iree_hal_buffer_view_t> buffer_view) {
-    char string_buffer[512];
-    iree_host_size_t string_length = 0;
-    IREE_RETURN_IF_ERROR(iree_hal_buffer_view_format(
-        buffer_view.get(), 128, IREE_ARRAYSIZE(string_buffer), string_buffer,
-        &string_length));
+  // Creates a new tokenizer based on the contents of the buffer.
+  StatusOr<vm::ref<iree_tokenizer_spm_t>> LoadTokenizerFromTensor(
+      vm::ref<iree_hal_buffer_t> buffer) {
+    iree_hal_buffer_mapping_t mapping;
+    IREE_RETURN_IF_ERROR(iree_hal_buffer_map_range(
+        buffer.get(), IREE_HAL_MAPPING_MODE_SCOPED, IREE_HAL_MEMORY_ACCESS_READ,
+        /*byte_offset=*/0, /*byte_length=*/buffer->byte_length, &mapping));
 
-    vm::ref<iree_custom_string_t> string;
-    IREE_RETURN_IF_ERROR(iree_custom_string_create(
-        iree_make_string_view(string_buffer, string_length), host_allocator_,
-        &string));
-    fprintf(stdout, "CREATE %.*s\n", static_cast<int>(string->value.size),
-            string->value.data);
-    fflush(stdout);
-    return std::move(string);
+    vm::ref<iree_tokenizer_spm_t> tokenizer;
+    IREE_RETURN_IF_ERROR(iree_tokenizer_spm_create(
+        std::string_view(reinterpret_cast<const char*>(mapping.contents.data),
+                         mapping.contents.data_length),
+        host_allocator_, &tokenizer));
+    IREE_RETURN_IF_ERROR(iree_hal_buffer_unmap_range(&mapping));
+    return std::move(tokenizer);
   }
 
-  // Prints the contents of the string to stdout.
-  Status StringPrint(const vm::ref<iree_custom_string_t> string) {
-    if (!string) return OkStatus();  // no-op
-    fprintf(stdout, "PRINT %.*s\n", static_cast<int>(string->value.size),
-            string->value.data);
-    fflush(stdout);
-    return OkStatus();
+  // Creates a new tokenizer based on the contents of the buffer.
+  StatusOr<vm::ref<iree_tokenizer_spm_t>> LoadTokenizerFromBuffer(
+      vm::ref<iree_vm_buffer_t> buffer) {
+    vm::ref<iree_tokenizer_spm_t> tokenizer;
+    IREE_RETURN_IF_ERROR(iree_tokenizer_spm_create(
+        std::string_view(reinterpret_cast<const char*>(buffer->data.data),
+                         buffer->data.data_length),
+        host_allocator_, &tokenizer));
+    return std::move(tokenizer);
+  }
+
+  StatusOr<vm::ref<iree_vm_buffer_t>> EncodeI64(
+      const vm::ref<iree_hal_device_t> device,
+      const vm::ref<iree_tokenizer_spm_t> tokenizer,
+      vm::ref<iree_vm_buffer_t> line) {
+    IREE_ASSERT_ARGUMENT(tokenizer);
+    IREE_ASSERT_ARGUMENT(line);
+
+    std::vector<int> ids;
+    if (!tokenizer->tokenizer
+             ->Encode(std::string_view(
+                          reinterpret_cast<const char*>(line->data.data),
+                          line->data.data_length),
+                      &ids)
+             .ok()) {
+      return iree_make_status(IREE_STATUS_UNKNOWN, "Failed to decode line");
+    }
+
+    // SentencePiece can only populate i32 token widths so copy to the target
+    // width.
+    std::vector<int64_t> i64_ids(ids.begin(), ids.end());
+
+    vm::ref<iree_vm_buffer_t> buffer;
+    iree_vm_buffer_initialize(
+        IREE_VM_BUFFER_ACCESS_MUTABLE | IREE_VM_BUFFER_ACCESS_ORIGIN_HOST,
+        iree_make_byte_span(i64_ids.data(), i64_ids.size() * sizeof(int64_t)),
+        host_allocator_, buffer.get());
+    return std::move(buffer);
   }
 
  private:
@@ -155,48 +196,39 @@ class CustomModuleState final {
 };
 
 // Function table mapping imported function names to their implementation.
-static const vm::NativeFunction<CustomModuleState> kCustomModuleFunctions[] = {
-    vm::MakeNativeFunction("string.from_tensor",
-                           &CustomModuleState::StringFromTensor),
-    vm::MakeNativeFunction("string.print", &CustomModuleState::StringPrint),
+static const vm::NativeFunction<TokenizerModuleState>
+    kTokenizerModuleFunctions[] = {
+        vm::MakeNativeFunction("tokenizer.load_spm.from_buffer",
+                               &TokenizerModuleState::LoadTokenizerFromBuffer),
+        vm::MakeNativeFunction("tokenizer.load_spm.from_tensor",
+                               &TokenizerModuleState::LoadTokenizerFromTensor),
+        vm::MakeNativeFunction("tokenizer.encode_i64",
+                               &TokenizerModuleState::EncodeI64),
 };
 
 // The module instance that will be allocated and reused across contexts.
-// Any context-specific state must be stored in a state structure such as
-// CustomModuleState.
-//
-// Assumed thread-safe (by construction here, as it's immutable), though if any
-// mutable state is stored here it will need to be synchronized by the
-// implementation.
-class CustomModule final : public vm::NativeModule<CustomModuleState> {
+// Any context-specific state must be stored in a TokenizerModuleState.
+class TokenizerModule final : public vm::NativeModule<TokenizerModuleState> {
  public:
-  using vm::NativeModule<CustomModuleState>::NativeModule;
+  using vm::NativeModule<TokenizerModuleState>::NativeModule;
 
-  ~CustomModule() override {
-    iree_custom_module_basic_unregister_types(instance());
+  ~TokenizerModule() override {
+    iree_tokenizer_basic_unregister_types(instance());
   }
 
   // Creates per-context state when the module is added to a new context.
   // May be called from any thread.
-  StatusOr<std::unique_ptr<CustomModuleState>> CreateState(
+  StatusOr<std::unique_ptr<TokenizerModuleState>> CreateState(
       iree_allocator_t host_allocator) override {
-    auto state = std::make_unique<CustomModuleState>(host_allocator);
+    auto state = std::make_unique<TokenizerModuleState>(host_allocator);
     return state;
   }
 };
 
 }  // namespace
 
-// Creates a native custom module that can be reused in multiple contexts.
-// The module itself may hold state that can be shared by all instantiated
-// copies but it will require the module to provide synchronization; usually
-// it's safer to just treat the module as immutable and keep state within the
-// instantiated module states instead.
-//
-// Note that while we are using C++ bindings internally we still expose the
-// module as a C instance. This hides the details of our implementation and
-// is required for working across the dynamic library boundary.
-extern "C" IREE_VM_DYNAMIC_MODULE_EXPORT iree_status_t create_custom_module(
+// Creates a native tokenizer module that can be reused in multiple contexts.
+extern "C" IREE_VM_DYNAMIC_MODULE_EXPORT iree_status_t create_tokenizer_module(
     iree_vm_dynamic_module_version_t max_version, iree_vm_instance_t* instance,
     iree_host_size_t param_count, const iree_string_pair_t* params,
     iree_allocator_t host_allocator, iree_vm_module_t** out_module) {
@@ -217,26 +249,13 @@ extern "C" IREE_VM_DYNAMIC_MODULE_EXPORT iree_status_t create_custom_module(
           "Tracy is not currently supported in custom dynamic modules\n");
 #endif  // IREE_TRACING_FEATURES
 
-  // Ensure HAL types are available. We need to do this as we're being
-  // dynamically loaded and can't automatically access the hosting process
-  // variables.
   IREE_RETURN_IF_ERROR(iree_hal_module_resolve_all_types(instance));
+  IREE_RETURN_IF_ERROR(iree_tokenizer_basic_register_types(instance));
 
-  // Register custom types used by the module against the instance.
-  // Note that this function must be safe to call multiple times as the module
-  // may be loaded multiple times.
-  IREE_RETURN_IF_ERROR(iree_custom_module_basic_register_types(instance));
-
-  // Create the custom module and return it to the runtime.
-  // NOTE: this isn't using the allocator here and that's bad as it leaves
-  // untracked allocations and pulls in the system allocator that may differ
-  // from the one requested by the user.
-  // TODO(benvanik): std::allocator wrapper around iree_allocator_t so this can
-  // use that instead.
-  auto module = std::make_unique<CustomModule>(
-      "custom", /*version=*/0, instance, host_allocator,
-      iree::span<const vm::NativeFunction<CustomModuleState>>(
-          kCustomModuleFunctions));
+  auto module = std::make_unique<TokenizerModule>(
+      "tokenizer", /*version=*/0, instance, host_allocator,
+      iree::span<const vm::NativeFunction<TokenizerModuleState>>(
+          kTokenizerModuleFunctions));
   *out_module = module.release()->interface();
   return iree_ok_status();
 }

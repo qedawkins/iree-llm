@@ -9,6 +9,7 @@ target_link_libraries(${_NAME}
   iree_modules_hal_types
   iree_vm_vm
   iree_vm_dynamic_api
+  sentencepiece-static
 )
 
 # NOTE: this is only required because we want this sample to run on all

@@ -27,8 +27,9 @@ set(IREE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(IREE_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
 set(IREE_BUILD_COMPILER OFF CACHE BOOL "" FORCE)
 
-add_subdirectory(third_party/iree)
-add_subdirectory(third_party/sentencepiece)
+add_subdirectory(third_party/iree EXCLUDE_FROM_ALL)
+add_subdirectory(third_party/sentencepiece EXCLUDE_FROM_ALL)
+include_directories(third_party/sentencepiece/src)
 
 #-------------------------------------------------------------------------------
 # Individual samples

@@ -71,12 +71,12 @@ static iree_status_t iree_tokenizer_spm_create(
     //                         "Failed to load tokenizer module ");
     return iree_make_status(IREE_STATUS_UNKNOWN);
   }
-  if (!tokenizer->SetEncodeExtraOptions("bos:eos").ok()) {
+  if (!tokenizer->SetEncodeExtraOptions("bos").ok()) {
     // return iree_make_status(IREE_STATUS_UNKNOWN,
     //                         "Failed to set extra tokenizer encode options");
     return iree_make_status(IREE_STATUS_UNKNOWN);
   }
-  if (!tokenizer->SetDecodeExtraOptions("bos:eos").ok()) {
+  if (!tokenizer->SetDecodeExtraOptions("bos").ok()) {
     // return iree_make_status(IREE_STATUS_UNKNOWN,
     //                         "Failed to set extra tokenizer decode options");
     return iree_make_status(IREE_STATUS_UNKNOWN);
@@ -200,6 +200,56 @@ class TokenizerModuleState final {
     return vm::ref<iree_vm_buffer_t>(std::move(buffer));
   }
 
+  StatusOr<vm::ref<iree_vm_buffer_t>> DecodeI64(
+      const vm::ref<iree_tokenizer_spm_t> tokenizer,
+      vm::ref<iree_hal_buffer_view_t> buffer_view) {
+    IREE_ASSERT_ARGUMENT(tokenizer);
+    IREE_ASSERT_ARGUMENT(buffer_view);
+
+    auto* view = buffer_view.get();
+    iree_hal_element_type_t element_type =
+        iree_hal_buffer_view_element_type(view);
+    if (!iree_hal_element_numerical_type_is_opaque(element_type) &&
+        !iree_hal_element_numerical_type_is_integer(element_type) &&
+        iree_hal_element_bit_count(element_type) != 64) {
+      // return iree_make_status(IREE_STATUS_INVALID_ARGUMENT, "Invalid token
+      // element type");
+      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT);
+    }
+
+    iree_hal_buffer_t* buf = iree_hal_buffer_view_buffer(view);
+    iree_device_size_t size = iree_hal_buffer_view_byte_length(view);
+    iree_hal_buffer_mapping_t mapping = {{0}};
+    IREE_RETURN_IF_ERROR(iree_hal_buffer_map_range(
+        buf, IREE_HAL_MAPPING_MODE_SCOPED, IREE_HAL_MEMORY_ACCESS_READ,
+        /*byte_offset=*/0, /*byte_length=*/size, &mapping));
+
+    const int64_t* data =
+        reinterpret_cast<const int64_t*>(mapping.contents.data);
+    size_t num_tokens = static_cast<size_t>(size) / sizeof(int64_t);
+    // std::vector<int> ids(num_tokens);
+    // ids.assign(data, data + num_tokens);
+    std::vector<int> ids;
+    for (int i = 0, e = num_tokens; i < e; ++i) {
+      ids.push_back(data[i]);
+    }
+
+    std::string detok;
+    if (!tokenizer->tokenizer->Decode(ids, &detok).ok()) {
+      // return iree_make_status(IREE_STATUS_UNKNOWN, "Failed to decode line");
+      return iree_make_status(IREE_STATUS_UNKNOWN);
+    }
+
+    iree_vm_buffer_t* buffer = NULL;
+    IREE_RETURN_IF_ERROR(iree_vm_buffer_create(
+        IREE_VM_BUFFER_ACCESS_ORIGIN_GUEST | IREE_VM_BUFFER_ACCESS_MUTABLE,
+        detok.size(), 1, host_allocator_, &buffer));
+    IREE_RETURN_IF_ERROR(iree_vm_buffer_write_elements(detok.data(), buffer, 0,
+                                                       detok.size(), 1));
+
+    return vm::ref<iree_vm_buffer_t>(std::move(buffer));
+  }
+
  private:
   // Allocator that the caller requested we use for any allocations we need to
   // perform during operation.
@@ -214,6 +264,7 @@ static const vm::NativeFunction<TokenizerModuleState>
         vm::MakeNativeFunction("load_spm.from_tensor",
                                &TokenizerModuleState::LoadTokenizerFromTensor),
         vm::MakeNativeFunction("encode_i64", &TokenizerModuleState::EncodeI64),
+        vm::MakeNativeFunction("decode_i64", &TokenizerModuleState::DecodeI64),
 };
 
 // The module instance that will be allocated and reused across contexts.

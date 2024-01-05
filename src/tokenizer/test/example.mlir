@@ -33,6 +33,9 @@ module @example {
   // Returns an array of 64-bit tokens based on the tokenizer and given text.
   func.func private @tokenizer.encode_i64(!tokenizer.spm, !util.buffer) -> !util.buffer
 
+  // Returns a string buffer of the text decoded from the given tokens.
+  func.func private @tokenizer.decode_i64(!tokenizer.spm, tensor<?xi64>) -> !util.buffer
+
   //===--------------------------------------------------------------------===//
   // Sample methods
   //===--------------------------------------------------------------------===//
@@ -64,6 +67,9 @@ module @example {
 
     %num_tok = arith.divui %tok_bytes, %c8 : index
     %token_tensor = hal.tensor.import %ref : !hal.buffer -> tensor<?xi64>{%num_tok}
+
+    %detok_line = call @tokenizer.decode_i64(%tokenizer, %token_tensor) : (!tokenizer.spm, tensor<?xi64>) -> !util.buffer
+    func.call @print_buffer(%stdout, %detok_line) : (!io_stream.handle, !util.buffer) -> ()
 
     return %token_tensor : tensor<?xi64>
   }

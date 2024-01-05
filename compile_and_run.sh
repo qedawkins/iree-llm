@@ -7,3 +7,4 @@
     --module=module.vmfb \
     --parameters=tokenizer.irpa \
     --function=main
+    #--trace_execution=true \

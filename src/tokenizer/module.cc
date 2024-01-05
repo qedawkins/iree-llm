@@ -9,6 +9,8 @@
 #include <string_view>
 #include <vector>
 
+#define IREE_STATUS_FEATURES 2
+
 #include "iree/base/api.h"
 #include "iree/hal/api.h"
 #include "iree/modules/hal/types.h"
@@ -65,17 +67,21 @@ static iree_status_t iree_tokenizer_spm_create(
       new sentencepiece::SentencePieceProcessor();
   const auto spmStatus = tokenizer->LoadFromSerializedProto(string);
   if (!spmStatus.ok()) {
-    return iree_make_status(IREE_STATUS_UNKNOWN,
-                            "Failed to load tokenizer module ");
+    // return iree_make_status(IREE_STATUS_UNKNOWN,
+    //                         "Failed to load tokenizer module ");
+    return iree_make_status(IREE_STATUS_UNKNOWN);
   }
   if (!tokenizer->SetEncodeExtraOptions("bos:eos").ok()) {
-    return iree_make_status(IREE_STATUS_UNKNOWN,
-                            "Failed to set extra tokenizer encode options");
+    // return iree_make_status(IREE_STATUS_UNKNOWN,
+    //                         "Failed to set extra tokenizer encode options");
+    return iree_make_status(IREE_STATUS_UNKNOWN);
   }
   if (!tokenizer->SetDecodeExtraOptions("bos:eos").ok()) {
-    return iree_make_status(IREE_STATUS_UNKNOWN,
-                            "Failed to set extra tokenizer decode options");
+    // return iree_make_status(IREE_STATUS_UNKNOWN,
+    //                         "Failed to set extra tokenizer decode options");
+    return iree_make_status(IREE_STATUS_UNKNOWN);
   }
+  wrapped_tokenizer->tokenizer = tokenizer;
   *out_tokenizer = wrapped_tokenizer;
   return iree_ok_status();
 }
@@ -134,11 +140,14 @@ class TokenizerModuleState final {
 
   // Creates a new tokenizer based on the contents of the buffer.
   StatusOr<vm::ref<iree_tokenizer_spm_t>> LoadTokenizerFromTensor(
-      vm::ref<iree_hal_buffer_t> buffer) {
-    iree_hal_buffer_mapping_t mapping;
+      vm::ref<iree_hal_buffer_view_t> buffer_view) {
+    auto* view = buffer_view.get();
+    iree_hal_buffer_t* buf = iree_hal_buffer_view_buffer(view);
+    iree_device_size_t size = iree_hal_buffer_view_byte_length(view);
+    iree_hal_buffer_mapping_t mapping = {{0}};
     IREE_RETURN_IF_ERROR(iree_hal_buffer_map_range(
-        buffer.get(), IREE_HAL_MAPPING_MODE_SCOPED, IREE_HAL_MEMORY_ACCESS_READ,
-        /*byte_offset=*/0, /*byte_length=*/buffer->byte_length, &mapping));
+        buf, IREE_HAL_MAPPING_MODE_SCOPED, IREE_HAL_MEMORY_ACCESS_READ,
+        /*byte_offset=*/0, /*byte_length=*/size, &mapping));
 
     vm::ref<iree_tokenizer_spm_t> tokenizer;
     IREE_RETURN_IF_ERROR(iree_tokenizer_spm_create(
@@ -161,7 +170,6 @@ class TokenizerModuleState final {
   }
 
   StatusOr<vm::ref<iree_vm_buffer_t>> EncodeI64(
-      const vm::ref<iree_hal_device_t> device,
       const vm::ref<iree_tokenizer_spm_t> tokenizer,
       vm::ref<iree_vm_buffer_t> line) {
     IREE_ASSERT_ARGUMENT(tokenizer);
@@ -174,19 +182,22 @@ class TokenizerModuleState final {
                           line->data.data_length),
                       &ids)
              .ok()) {
-      return iree_make_status(IREE_STATUS_UNKNOWN, "Failed to decode line");
+      // return iree_make_status(IREE_STATUS_UNKNOWN, "Failed to decode line");
+      return iree_make_status(IREE_STATUS_UNKNOWN);
     }
 
     // SentencePiece can only populate i32 token widths so copy to the target
     // width.
     std::vector<int64_t> i64_ids(ids.begin(), ids.end());
 
-    vm::ref<iree_vm_buffer_t> buffer;
-    iree_vm_buffer_initialize(
-        IREE_VM_BUFFER_ACCESS_MUTABLE | IREE_VM_BUFFER_ACCESS_ORIGIN_HOST,
-        iree_make_byte_span(i64_ids.data(), i64_ids.size() * sizeof(int64_t)),
-        host_allocator_, buffer.get());
-    return std::move(buffer);
+    iree_vm_buffer_t* buffer = NULL;
+    IREE_RETURN_IF_ERROR(iree_vm_buffer_create(
+        IREE_VM_BUFFER_ACCESS_ORIGIN_GUEST | IREE_VM_BUFFER_ACCESS_MUTABLE,
+        i64_ids.size() * sizeof(int64_t), 64, host_allocator_, &buffer));
+    IREE_RETURN_IF_ERROR(iree_vm_buffer_write_elements(
+        i64_ids.data(), buffer, 0, i64_ids.size(), sizeof(int64_t)));
+
+    return vm::ref<iree_vm_buffer_t>(std::move(buffer));
   }
 
  private:
@@ -198,12 +209,11 @@ class TokenizerModuleState final {
 // Function table mapping imported function names to their implementation.
 static const vm::NativeFunction<TokenizerModuleState>
     kTokenizerModuleFunctions[] = {
-        vm::MakeNativeFunction("tokenizer.load_spm.from_buffer",
+        vm::MakeNativeFunction("load_spm.from_buffer",
                                &TokenizerModuleState::LoadTokenizerFromBuffer),
-        vm::MakeNativeFunction("tokenizer.load_spm.from_tensor",
+        vm::MakeNativeFunction("load_spm.from_tensor",
                                &TokenizerModuleState::LoadTokenizerFromTensor),
-        vm::MakeNativeFunction("tokenizer.encode_i64",
-                               &TokenizerModuleState::EncodeI64),
+        vm::MakeNativeFunction("encode_i64", &TokenizerModuleState::EncodeI64),
 };
 
 // The module instance that will be allocated and reused across contexts.
@@ -235,10 +245,11 @@ extern "C" IREE_VM_DYNAMIC_MODULE_EXPORT iree_status_t create_tokenizer_module(
   // Ensure the version matches; the version will change if the VM module
   // interface changes and existing libraries are incompatible.
   if (max_version != IREE_VM_DYNAMIC_MODULE_VERSION_LATEST) {
-    return iree_make_status(
-        IREE_STATUS_UNIMPLEMENTED,
-        "unsupported runtime version %u, module compiled with version %u",
-        max_version, IREE_VM_DYNAMIC_MODULE_VERSION_LATEST);
+    // return iree_make_status(
+    //     IREE_STATUS_UNIMPLEMENTED,
+    //     "unsupported runtime version %u, module compiled with version %u",
+    //     max_version, IREE_VM_DYNAMIC_MODULE_VERSION_LATEST);
+    return iree_make_status(IREE_STATUS_UNIMPLEMENTED);
   }
 
 #if IREE_TRACING_FEATURES

@@ -250,6 +250,38 @@ class TokenizerModuleState final {
     return vm::ref<iree_vm_buffer_t>(std::move(buffer));
   }
 
+  StatusOr<int32_t> IsNotEOS(
+      const vm::ref<iree_tokenizer_spm_t> tokenizer,
+      vm::ref<iree_hal_buffer_view_t> buffer_view) {
+    IREE_ASSERT_ARGUMENT(buffer_view);
+    IREE_ASSERT_ARGUMENT(tokenizer);
+
+    auto* view = buffer_view.get();
+    iree_hal_element_type_t element_type =
+        iree_hal_buffer_view_element_type(view);
+    if (!iree_hal_element_numerical_type_is_opaque(element_type) &&
+        !iree_hal_element_numerical_type_is_integer(element_type) &&
+        iree_hal_element_bit_count(element_type) != 64) {
+      // return iree_make_status(IREE_STATUS_INVALID_ARGUMENT, "Invalid token
+      // element type");
+      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT);
+    }
+
+    iree_device_size_t size = iree_hal_buffer_view_byte_length(view);
+    if (size != 1) {
+      // return iree_make_status(IREE_STATUS_INVALID_ARGUMENT, "Requires single token");
+      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT);
+    }
+    iree_hal_buffer_t* buf = iree_hal_buffer_view_buffer(view);
+    iree_hal_buffer_mapping_t mapping = {{0}};
+    IREE_RETURN_IF_ERROR(iree_hal_buffer_map_range(
+        buf, IREE_HAL_MAPPING_MODE_SCOPED, IREE_HAL_MEMORY_ACCESS_READ,
+        /*byte_offset=*/0, /*byte_length=*/size, &mapping));
+
+    int64_t data = reinterpret_cast<const int64_t*>(mapping.contents.data)[0];
+    return data != tokenizer->tokenizer->eos_id();
+  }
+
  private:
   // Allocator that the caller requested we use for any allocations we need to
   // perform during operation.
@@ -265,6 +297,7 @@ static const vm::NativeFunction<TokenizerModuleState>
                                &TokenizerModuleState::LoadTokenizerFromTensor),
         vm::MakeNativeFunction("encode_i64", &TokenizerModuleState::EncodeI64),
         vm::MakeNativeFunction("decode_i64", &TokenizerModuleState::DecodeI64),
+        vm::MakeNativeFunction("is_not_eos", &TokenizerModuleState::IsNotEOS),
 };
 
 // The module instance that will be allocated and reused across contexts.

@@ -16,16 +16,16 @@ module @chatbot {
   //===--------------------------------------------------------------------===//
   // Creates a new tokenizer (on the host) with contents from the given tensor.
   // Probably don't use this.
-  func.func private @tokenizer.load_spm.from_tensor(tensor<?xi8>) -> !tokenizer.spm
+  func.func private @tokenizer.load_spm.from_tensor(!hal.device, tensor<?xi8>) -> !tokenizer.spm
 
   // Creates a new tokenizer with the contents of the given buffer.
   func.func private @tokenizer.load_spm.from_buffer(!util.buffer) -> !tokenizer.spm
 
   // Returns an array of 64-bit tokens based on the tokenizer and given text.
-  func.func private @tokenizer.encode_i64(!tokenizer.spm, !util.buffer) -> !util.buffer
+  func.func private @tokenizer.encode_i64(!tokenizer.spm, !hal.device, !util.buffer) -> (i32, !hal.buffer)
 
   // Returns a string buffer of the text decoded from the given tokens.
-  func.func private @tokenizer.decode_i64(!tokenizer.spm, tensor<?xi64>) -> !util.buffer
+  func.func private @tokenizer.decode_i64(!tokenizer.spm, !hal.device, tensor<?xi64>) -> !util.buffer
 
   func.func @chat() -> () {
     %stdin = io_stream.console.stdin : !io_stream.handle
@@ -44,7 +44,7 @@ module @chatbot {
 
     %serialized_tokenizer = util.global.load @serialized_tokenizer : tensor<499723xi8>
     %cast = tensor.cast %serialized_tokenizer : tensor<499723xi8> to tensor<?xi8>
-    %tokenizer = func.call @tokenizer.load_spm.from_tensor(%cast) : (tensor<?xi8>) -> !tokenizer.spm
+    %tokenizer = func.call @tokenizer.load_spm.from_tensor(%device_0, %cast) : (!hal.device, tensor<?xi8>) -> !tokenizer.spm
   
     // Prompt printed each time we wait for input.
     %prompt = util.buffer.constant : !util.buffer = "type a line, ctrl-c to exit > "
@@ -67,16 +67,10 @@ module @chatbot {
         %not_line_empty = arith.cmpi ne, %line_length, %c0 : index
         scf.if %not_line_empty {
           // Tokenize the line.
-          %tokens = func.call @tokenizer.encode_i64(%tokenizer, %line) : (!tokenizer.spm, !util.buffer) -> !util.buffer
-          %tok_bytes = util.buffer.size %tokens : !util.buffer
-          %ok, %ref = hal.allocator.import<%allocator : !hal.allocator>
-                  source(%tokens : !util.buffer)[%c0, %tok_bytes]
-                  affinity(%affinity) type(DeviceLocal) usage("TransferSource|TransferTarget|Transfer|DispatchStorage") : i1, !hal.buffer
-          cf.assert %ok, "failed to import tokens"
-
-          %num_tok = arith.divui %tok_bytes, %c8 : index
-          %token_tensor = hal.tensor.import %ref : !hal.buffer -> tensor<?xi64>{%num_tok}
-          %detok_line = func.call @tokenizer.decode_i64(%tokenizer, %token_tensor) : (!tokenizer.spm, tensor<?xi64>) -> !util.buffer
+          %num_tok_i32, %tokens = func.call @tokenizer.encode_i64(%tokenizer, %device_0, %line) : (!tokenizer.spm, !hal.device, !util.buffer) -> (i32, !hal.buffer)
+          %num_tok = arith.index_cast %num_tok_i32 : i32 to index
+          %token_tensor = hal.tensor.import %tokens : !hal.buffer -> tensor<?xi64>{%num_tok}
+          %detok_line = func.call @tokenizer.decode_i64(%tokenizer, %device_0, %token_tensor) : (!tokenizer.spm, !hal.device, tensor<?xi64>) -> !util.buffer
           func.call @print_buffer(%stdout, %detok_line) : (!io_stream.handle, !util.buffer) -> ()
           scf.yield
         }

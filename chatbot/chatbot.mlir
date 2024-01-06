@@ -16,19 +16,19 @@ module @chatbot {
   //===--------------------------------------------------------------------===//
   // Creates a new tokenizer (on the host) with contents from the given tensor.
   // Probably don't use this.
-  func.func private @tokenizer.load_spm.from_tensor(tensor<?xi8>) -> !tokenizer.spm
+  func.func private @tokenizer.load_spm.from_tensor(!hal.device, tensor<?xi8>) -> !tokenizer.spm
 
   // Creates a new tokenizer with the contents of the given buffer.
   func.func private @tokenizer.load_spm.from_buffer(!util.buffer) -> !tokenizer.spm
 
   // Returns an array of 64-bit tokens based on the tokenizer and given text.
-  func.func private @tokenizer.encode_i64(!tokenizer.spm, !util.buffer) -> !util.buffer
+  func.func private @tokenizer.encode_i64(!tokenizer.spm, !hal.device, !util.buffer) -> (i32, !hal.buffer)
 
   // Returns a string buffer of the text decoded from the given tokens.
-  func.func private @tokenizer.decode_i64(!tokenizer.spm, tensor<1x?xi64>) -> !util.buffer
+  func.func private @tokenizer.decode_i64(!tokenizer.spm, !hal.device, tensor<1x?xi64>) -> !util.buffer
 
   // Returns a string buffer of the text decoded from the given tokens.
-  func.func private @tokenizer.is_not_eos(!tokenizer.spm, tensor<1x1xi64>) -> i1
+  func.func private @tokenizer.is_not_eos(!tokenizer.spm, !hal.device, tensor<1x1xi64>) -> i1
 
   //===--------------------------------------------------------------------===//
   // LLaMa Imports
@@ -42,6 +42,7 @@ module @chatbot {
 
   func.func private @gen_text(%stdout: !io_stream.handle,
                               %tspm: !tokenizer.spm,
+                              %device: !hal.device,
                               %input: tensor<1x?xi64>) -> tensor<1x?xi64> {
     %text = util.buffer.constant : !util.buffer = "Generating token..."
     %c0 = arith.constant 0 : index
@@ -63,8 +64,8 @@ module @chatbot {
                                      %tokens = %init,
                                      %prev_tok = %first_token)
     : (index, tensor<1x512xi64>, tensor<1x1xi64>) -> (index, tensor<1x512xi64>, tensor<1x1xi64>) {
-      %is_not_eos = func.call @tokenizer.is_not_eos(%tspm, %prev_tok)
-                    : (!tokenizer.spm, tensor<1x1xi64>) -> i1
+      %is_not_eos = func.call @tokenizer.is_not_eos(%tspm, %device, %prev_tok)
+                    : (!tokenizer.spm, !hal.device, tensor<1x1xi64>) -> i1
       %cond_in_range = arith.cmpi slt, %step, %c511 : index
       %continue = arith.andi %cond_in_range, %is_not_eos : i1
       %stepp1 = arith.addi %step, %c1 : index
@@ -104,7 +105,8 @@ module @chatbot {
 
     %serialized_tokenizer = util.global.load @serialized_tokenizer : tensor<499723xi8>
     %cast = tensor.cast %serialized_tokenizer : tensor<499723xi8> to tensor<?xi8>
-    %tokenizer = func.call @tokenizer.load_spm.from_tensor(%cast) : (tensor<?xi8>) -> !tokenizer.spm
+    %tokenizer = func.call @tokenizer.load_spm.from_tensor(%device_0, %cast)
+                           : (!hal.device, tensor<?xi8>) -> !tokenizer.spm
   
     // Prompt printed each time we wait for input.
     %prompt = util.buffer.constant : !util.buffer = "type a line, ctrl-c to exit > "
@@ -127,24 +129,18 @@ module @chatbot {
         %not_line_empty = arith.cmpi ne, %line_length, %c0 : index
         scf.if %not_line_empty {
           // Tokenize the line.
-          %tokens = func.call @tokenizer.encode_i64(%tokenizer, %line) : (!tokenizer.spm, !util.buffer) -> !util.buffer
-          %tok_bytes = util.buffer.size %tokens : !util.buffer
-          %ok, %ref = hal.allocator.import<%allocator : !hal.allocator>
-                  source(%tokens : !util.buffer)[%c0, %tok_bytes]
-                  affinity(%affinity) type(DeviceLocal)
-                  usage("TransferSource|TransferTarget|Transfer|DispatchStorage") : i1, !hal.buffer
-          cf.assert %ok, "failed to import tokens"
-
-          %num_tok = arith.divui %tok_bytes, %c8 : index
-          %token_tensor = hal.tensor.import %ref : !hal.buffer -> tensor<1x?xi64>{%num_tok}
+          %num_tok_i32, %tokens = func.call @tokenizer.encode_i64(%tokenizer, %device_0, %line)
+                    : (!tokenizer.spm, !hal.device, !util.buffer) -> (i32, !hal.buffer)
+          %num_tok = arith.index_cast %num_tok_i32 : i32 to index
+          %token_tensor = hal.tensor.import %tokens : !hal.buffer -> tensor<1x?xi64>{%num_tok}
 
           %import_text = util.buffer.constant : !util.buffer = "Imported tokens..."
           func.call @print_buffer(%stdout, %import_text) : (!io_stream.handle, !util.buffer) -> ()
 
-          %new_line = func.call @gen_text(%stdout, %tokenizer, %token_tensor)
-                      : (!io_stream.handle, !tokenizer.spm, tensor<1x?xi64>) -> tensor<1x?xi64>
-          %detok_line = func.call @tokenizer.decode_i64(%tokenizer, %new_line)
-                        : (!tokenizer.spm, tensor<1x?xi64>) -> !util.buffer
+          %new_line = func.call @gen_text(%stdout, %tokenizer, %device_0, %token_tensor)
+                      : (!io_stream.handle, !tokenizer.spm, !hal.device, tensor<1x?xi64>) -> tensor<1x?xi64>
+          %detok_line = func.call @tokenizer.decode_i64(%tokenizer, %device_0, %new_line)
+                        : (!tokenizer.spm, !hal.device, tensor<1x?xi64>) -> !util.buffer
           func.call @print_buffer(%stdout, %detok_line) : (!io_stream.handle, !util.buffer) -> ()
           scf.yield
         }

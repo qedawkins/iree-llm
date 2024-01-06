@@ -140,21 +140,24 @@ class TokenizerModuleState final {
 
   // Creates a new tokenizer based on the contents of the buffer.
   StatusOr<vm::ref<iree_tokenizer_spm_t>> LoadTokenizerFromTensor(
+      vm::ref<iree_hal_device_t> device,
       vm::ref<iree_hal_buffer_view_t> buffer_view) {
     auto* view = buffer_view.get();
     iree_hal_buffer_t* buf = iree_hal_buffer_view_buffer(view);
     iree_device_size_t size = iree_hal_buffer_view_byte_length(view);
-    iree_hal_buffer_mapping_t mapping = {{0}};
-    IREE_RETURN_IF_ERROR(iree_hal_buffer_map_range(
-        buf, IREE_HAL_MAPPING_MODE_SCOPED, IREE_HAL_MEMORY_ACCESS_READ,
-        /*byte_offset=*/0, /*byte_length=*/size, &mapping));
+
+    std::vector<uint8_t> actual_data(size);
+    IREE_RETURN_IF_ERROR(iree_hal_device_transfer_d2h(
+        device.get(), buf, /*source_offset=*/0,
+        /*target_buffer=*/actual_data.data(),
+        /*data_length=*/size, IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT,
+        iree_infinite_timeout()));
 
     vm::ref<iree_tokenizer_spm_t> tokenizer;
     IREE_RETURN_IF_ERROR(iree_tokenizer_spm_create(
-        std::string_view(reinterpret_cast<const char*>(mapping.contents.data),
-                         mapping.contents.data_length),
+        std::string_view(reinterpret_cast<const char*>(actual_data.data()),
+                         size),
         host_allocator_, &tokenizer));
-    IREE_RETURN_IF_ERROR(iree_hal_buffer_unmap_range(&mapping));
     return std::move(tokenizer);
   }
 
@@ -169,9 +172,9 @@ class TokenizerModuleState final {
     return std::move(tokenizer);
   }
 
-  StatusOr<vm::ref<iree_vm_buffer_t>> EncodeI64(
+  StatusOr<std::tuple<int32_t, vm::ref<iree_hal_buffer_t>>> EncodeI64(
       const vm::ref<iree_tokenizer_spm_t> tokenizer,
-      vm::ref<iree_vm_buffer_t> line) {
+      vm::ref<iree_hal_device_t> device, vm::ref<iree_vm_buffer_t> line) {
     IREE_ASSERT_ARGUMENT(tokenizer);
     IREE_ASSERT_ARGUMENT(line);
 
@@ -190,18 +193,28 @@ class TokenizerModuleState final {
     // width.
     std::vector<int64_t> i64_ids(ids.begin(), ids.end());
 
-    iree_vm_buffer_t* buffer = NULL;
-    IREE_RETURN_IF_ERROR(iree_vm_buffer_create(
-        IREE_VM_BUFFER_ACCESS_ORIGIN_GUEST | IREE_VM_BUFFER_ACCESS_MUTABLE,
-        i64_ids.size() * sizeof(int64_t), 64, host_allocator_, &buffer));
-    IREE_RETURN_IF_ERROR(iree_vm_buffer_write_elements(
-        i64_ids.data(), buffer, 0, i64_ids.size(), sizeof(int64_t)));
+    iree_hal_buffer_t* hal_buffer = nullptr;
+    const iree_hal_buffer_params_t params = {
+        .usage = IREE_HAL_BUFFER_USAGE_TRANSFER |
+                 IREE_HAL_BUFFER_USAGE_DISPATCH_STORAGE,
+        .type = IREE_HAL_MEMORY_TYPE_HOST_LOCAL |
+                IREE_HAL_MEMORY_TYPE_DEVICE_VISIBLE,
+    };
+    IREE_RETURN_IF_ERROR(iree_hal_allocator_allocate_buffer(
+        iree_hal_device_allocator(device.get()), params,
+        i64_ids.size() * sizeof(int64_t), &hal_buffer));
+    IREE_RETURN_IF_ERROR(iree_hal_device_transfer_h2d(
+        device.get(), i64_ids.data(), hal_buffer, 0,
+        i64_ids.size() * sizeof(int64_t), IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT,
+        iree_infinite_timeout()));
 
-    return vm::ref<iree_vm_buffer_t>(std::move(buffer));
+    return std::make_tuple(static_cast<int32_t>(i64_ids.size()),
+                           vm::ref<iree_hal_buffer_t>(std::move(hal_buffer)));
   }
 
   StatusOr<vm::ref<iree_vm_buffer_t>> DecodeI64(
       const vm::ref<iree_tokenizer_spm_t> tokenizer,
+      vm::ref<iree_hal_device_t> device,
       vm::ref<iree_hal_buffer_view_t> buffer_view) {
     IREE_ASSERT_ARGUMENT(tokenizer);
     IREE_ASSERT_ARGUMENT(buffer_view);
@@ -219,13 +232,14 @@ class TokenizerModuleState final {
 
     iree_hal_buffer_t* buf = iree_hal_buffer_view_buffer(view);
     iree_device_size_t size = iree_hal_buffer_view_byte_length(view);
-    iree_hal_buffer_mapping_t mapping = {{0}};
-    IREE_RETURN_IF_ERROR(iree_hal_buffer_map_range(
-        buf, IREE_HAL_MAPPING_MODE_SCOPED, IREE_HAL_MEMORY_ACCESS_READ,
-        /*byte_offset=*/0, /*byte_length=*/size, &mapping));
+    std::vector<uint8_t> actual_data(size);
+    IREE_RETURN_IF_ERROR(iree_hal_device_transfer_d2h(
+        device.get(), buf, /*source_offset=*/0,
+        /*target_buffer=*/actual_data.data(),
+        /*data_length=*/size, IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT,
+        iree_infinite_timeout()));
 
-    const int64_t* data =
-        reinterpret_cast<const int64_t*>(mapping.contents.data);
+    const int64_t* data = reinterpret_cast<const int64_t*>(actual_data.data());
     size_t num_tokens = static_cast<size_t>(size) / sizeof(int64_t);
     // std::vector<int> ids(num_tokens);
     // ids.assign(data, data + num_tokens);
@@ -250,9 +264,9 @@ class TokenizerModuleState final {
     return vm::ref<iree_vm_buffer_t>(std::move(buffer));
   }
 
-  StatusOr<int32_t> IsNotEOS(
-      const vm::ref<iree_tokenizer_spm_t> tokenizer,
-      vm::ref<iree_hal_buffer_view_t> buffer_view) {
+  StatusOr<int32_t> IsNotEOS(const vm::ref<iree_tokenizer_spm_t> tokenizer,
+                             vm::ref<iree_hal_device_t> device,
+                             vm::ref<iree_hal_buffer_view_t> buffer_view) {
     IREE_ASSERT_ARGUMENT(buffer_view);
     IREE_ASSERT_ARGUMENT(tokenizer);
 
@@ -269,16 +283,20 @@ class TokenizerModuleState final {
 
     iree_device_size_t size = iree_hal_buffer_view_byte_length(view);
     if (size != 1) {
-      // return iree_make_status(IREE_STATUS_INVALID_ARGUMENT, "Requires single token");
+      // return iree_make_status(IREE_STATUS_INVALID_ARGUMENT, "Requires single
+      // token");
       return iree_make_status(IREE_STATUS_INVALID_ARGUMENT);
     }
     iree_hal_buffer_t* buf = iree_hal_buffer_view_buffer(view);
     iree_hal_buffer_mapping_t mapping = {{0}};
-    IREE_RETURN_IF_ERROR(iree_hal_buffer_map_range(
-        buf, IREE_HAL_MAPPING_MODE_SCOPED, IREE_HAL_MEMORY_ACCESS_READ,
-        /*byte_offset=*/0, /*byte_length=*/size, &mapping));
+    std::vector<uint8_t> actual_data(size);
+    IREE_RETURN_IF_ERROR(iree_hal_device_transfer_d2h(
+        device.get(), buf, /*source_offset=*/0,
+        /*target_buffer=*/actual_data.data(),
+        /*data_length=*/size, IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT,
+        iree_infinite_timeout()));
 
-    int64_t data = reinterpret_cast<const int64_t*>(mapping.contents.data)[0];
+    int64_t data = reinterpret_cast<const int64_t*>(actual_data.data())[0];
     return data != tokenizer->tokenizer->eos_id();
   }
 

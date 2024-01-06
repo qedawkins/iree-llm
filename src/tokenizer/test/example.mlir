@@ -25,16 +25,16 @@ module @example {
   //===--------------------------------------------------------------------===//
   // Creates a new tokenizer (on the host) with contents from the given tensor.
   // Probably don't use this.
-  func.func private @tokenizer.load_spm.from_tensor(tensor<?xi8>) -> !tokenizer.spm
+  func.func private @tokenizer.load_spm.from_tensor(!hal.device, tensor<?xi8>) -> !tokenizer.spm
 
   // Creates a new tokenizer with the contents of the given buffer.
   func.func private @tokenizer.load_spm.from_buffer(!util.buffer) -> !tokenizer.spm
 
   // Returns an array of 64-bit tokens based on the tokenizer and given text.
-  func.func private @tokenizer.encode_i64(!tokenizer.spm, !util.buffer) -> !util.buffer
+  func.func private @tokenizer.encode_i64(!tokenizer.spm, !hal.device, !util.buffer) -> (i32, !hal.buffer)
 
   // Returns a string buffer of the text decoded from the given tokens.
-  func.func private @tokenizer.decode_i64(!tokenizer.spm, tensor<?xi64>) -> !util.buffer
+  func.func private @tokenizer.decode_i64(!tokenizer.spm, !hal.device, tensor<?xi64>) -> !util.buffer
 
   //===--------------------------------------------------------------------===//
   // Sample methods
@@ -46,29 +46,22 @@ module @example {
     %text = util.buffer.constant : !util.buffer = "please tokenize me :D"
     func.call @print_buffer(%stdout, %text) : (!io_stream.handle, !util.buffer) -> ()
 
-    %c0 = arith.constant 0 : index
-    %c8 = arith.constant 8 : index
-    %serialized_tokenizer = util.global.load @serialized_tokenizer : tensor<499723xi8>
-    %cast = tensor.cast %serialized_tokenizer : tensor<499723xi8> to tensor<?xi8>
-    %tokenizer = call @tokenizer.load_spm.from_tensor(%cast) : (tensor<?xi8>) -> !tokenizer.spm
-
-    %tokens = call @tokenizer.encode_i64(%tokenizer, %text) : (!tokenizer.spm, !util.buffer) -> !util.buffer
-
     // We need to get the device allocator to import the util buffer.
+    %c0 = arith.constant 0 : index
     %device_0 = hal.devices.get %c0 : !hal.device
     %allocator = hal.device.allocator<%device_0 : !hal.device> : !hal.allocator
 
-    %affinity = arith.constant -1 : i64
-    %tok_bytes = util.buffer.size %tokens : !util.buffer
-    %ok, %ref = hal.allocator.import<%allocator : !hal.allocator>
-            source(%tokens : !util.buffer)[%c0, %tok_bytes]
-            affinity(%affinity) type(DeviceLocal) usage("TransferSource|TransferTarget|Transfer|DispatchStorage") : i1, !hal.buffer
-    cf.assert %ok, "failed to import tokens"
+    %c8 = arith.constant 8 : index
+    %serialized_tokenizer = util.global.load @serialized_tokenizer : tensor<499723xi8>
+    %cast = tensor.cast %serialized_tokenizer : tensor<499723xi8> to tensor<?xi8>
+    %tokenizer = call @tokenizer.load_spm.from_tensor(%device_0, %cast) : (!hal.device, tensor<?xi8>) -> !tokenizer.spm
 
-    %num_tok = arith.divui %tok_bytes, %c8 : index
-    %token_tensor = hal.tensor.import %ref : !hal.buffer -> tensor<?xi64>{%num_tok}
+    %num_tok_i32, %tokens = call @tokenizer.encode_i64(%tokenizer, %device_0, %text) : (!tokenizer.spm, !hal.device, !util.buffer) -> (i32, !hal.buffer)
 
-    %detok_line = call @tokenizer.decode_i64(%tokenizer, %token_tensor) : (!tokenizer.spm, tensor<?xi64>) -> !util.buffer
+    %num_tok = arith.index_cast %num_tok_i32 : i32 to index
+    %token_tensor = hal.tensor.import %tokens : !hal.buffer -> tensor<?xi64>{%num_tok}
+
+    %detok_line = call @tokenizer.decode_i64(%tokenizer, %device_0, %token_tensor) : (!tokenizer.spm, !hal.device, tensor<?xi64>) -> !util.buffer
     func.call @print_buffer(%stdout, %detok_line) : (!io_stream.handle, !util.buffer) -> ()
 
     return %token_tensor : tensor<?xi64>

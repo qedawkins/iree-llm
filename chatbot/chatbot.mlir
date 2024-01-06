@@ -44,7 +44,6 @@ module @chatbot {
                               %tspm: !tokenizer.spm,
                               %device: !hal.device,
                               %input: tensor<1x?xi64>) -> tensor<1x?xi64> {
-    %text = util.buffer.constant : !util.buffer = "Generating token..."
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c512 = arith.constant 512 : index
@@ -55,9 +54,6 @@ module @chatbot {
                    : (tensor<1x?xi64>) -> tensor<1x1xi64>
     %init = tensor.insert_slice %first_token into
                      %empty[0, 0] [1, 1] [1, 1] : tensor<1x1xi64> into tensor<1x512xi64>
-
-    %import_text = util.buffer.constant : !util.buffer = "Imported tokens..."
-    func.call @print_buffer(%stdout, %import_text) : (!io_stream.handle, !util.buffer) -> ()
 
     // Loop until the end-of-sentence or maximum number of tokens is reached.
     %s, %toks, %last_tok = scf.while(%step = %c0,
@@ -73,7 +69,6 @@ module @chatbot {
                                : index, tensor<1x512xi64>, tensor<1x1xi64>
     } do {
     ^bb0(%curr: index, %curr_tokens: tensor<1x512xi64>, %prev: tensor<1x1xi64>):
-      func.call @print_buffer(%stdout, %text) : (!io_stream.handle, !util.buffer) -> ()
       %next = func.call @state_update.run_forward(%prev) : (tensor<1x1xi64>) -> tensor<1x1xi64>
       %next_text = tensor.insert_slice %next into
                      %curr_tokens[0, %curr] [1, 1] [1, 1] : tensor<1x1xi64> into tensor<1x512xi64>
@@ -133,9 +128,6 @@ module @chatbot {
                     : (!tokenizer.spm, !hal.device, !util.buffer) -> (i32, !hal.buffer)
           %num_tok = arith.index_cast %num_tok_i32 : i32 to index
           %token_tensor = hal.tensor.import %tokens : !hal.buffer -> tensor<1x?xi64>{%num_tok}
-
-          %import_text = util.buffer.constant : !util.buffer = "Imported tokens..."
-          func.call @print_buffer(%stdout, %import_text) : (!io_stream.handle, !util.buffer) -> ()
 
           %new_line = func.call @gen_text(%stdout, %tokenizer, %device_0, %token_tensor)
                       : (!io_stream.handle, !tokenizer.spm, !hal.device, tensor<1x?xi64>) -> tensor<1x?xi64>

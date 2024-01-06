@@ -282,7 +282,7 @@ class TokenizerModuleState final {
     }
 
     iree_device_size_t size = iree_hal_buffer_view_byte_length(view);
-    if (size != 1) {
+    if (size != 8) {
       // return iree_make_status(IREE_STATUS_INVALID_ARGUMENT, "Requires single
       // token");
       return iree_make_status(IREE_STATUS_INVALID_ARGUMENT);

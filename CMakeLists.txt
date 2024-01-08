@@ -28,12 +28,12 @@ set(IREE_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
 set(IREE_BUILD_COMPILER OFF CACHE BOOL "" FORCE)
 #set(IREE_ENABLE_ASAN ON CACHE BOOL "" FORCE)
 
-# Dynamic modules currently don't support status messages.
-# "-DIREE_STATUS_MODE=0"
-set(IREE_DEFAULT_COPTS
-    "${IREE_DEFAULT_COPTS}"
-    "-DIREE_STATUS_FEATURES=2"
-)
+# # Dynamic modules currently don't support source file locations.
+# # "-DIREE_STATUS_MODE=0"
+# set(IREE_DEFAULT_COPTS
+#     "${IREE_DEFAULT_COPTS}"
+#     "-DIREE_STATUS_FEATURES=2"
+# )
 
 
 add_subdirectory(third_party/iree EXCLUDE_FROM_ALL)

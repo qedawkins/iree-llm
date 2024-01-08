@@ -9,8 +9,6 @@
 #include <string_view>
 #include <vector>
 
-#define IREE_STATUS_FEATURES 2
-
 #include "iree/base/api.h"
 #include "iree/hal/api.h"
 #include "iree/modules/hal/types.h"
@@ -67,19 +65,16 @@ static iree_status_t iree_tokenizer_spm_create(
       new sentencepiece::SentencePieceProcessor();
   const auto spmStatus = tokenizer->LoadFromSerializedProto(string);
   if (!spmStatus.ok()) {
-    // return iree_make_status(IREE_STATUS_UNKNOWN,
-    //                         "Failed to load tokenizer module ");
-    return iree_make_status(IREE_STATUS_UNKNOWN);
+    return iree_make_status(IREE_STATUS_UNKNOWN,
+                            "Failed to load tokenizer module ");
   }
   if (!tokenizer->SetEncodeExtraOptions("bos").ok()) {
-    // return iree_make_status(IREE_STATUS_UNKNOWN,
-    //                         "Failed to set extra tokenizer encode options");
-    return iree_make_status(IREE_STATUS_UNKNOWN);
+    return iree_make_status(IREE_STATUS_UNKNOWN,
+                            "Failed to set extra tokenizer encode options");
   }
   if (!tokenizer->SetDecodeExtraOptions("bos").ok()) {
-    // return iree_make_status(IREE_STATUS_UNKNOWN,
-    //                         "Failed to set extra tokenizer decode options");
-    return iree_make_status(IREE_STATUS_UNKNOWN);
+    return iree_make_status(IREE_STATUS_UNKNOWN,
+                            "Failed to set extra tokenizer decode options");
   }
   wrapped_tokenizer->tokenizer = tokenizer;
   *out_tokenizer = wrapped_tokenizer;
@@ -185,8 +180,7 @@ class TokenizerModuleState final {
                           line->data.data_length),
                       &ids)
              .ok()) {
-      // return iree_make_status(IREE_STATUS_UNKNOWN, "Failed to decode line");
-      return iree_make_status(IREE_STATUS_UNKNOWN);
+      return iree_make_status(IREE_STATUS_UNKNOWN, "Failed to decode line");
     }
 
     // SentencePiece can only populate i32 token widths so copy to the target
@@ -225,9 +219,8 @@ class TokenizerModuleState final {
     if (!iree_hal_element_numerical_type_is_opaque(element_type) &&
         !iree_hal_element_numerical_type_is_integer(element_type) &&
         iree_hal_element_bit_count(element_type) != 64) {
-      // return iree_make_status(IREE_STATUS_INVALID_ARGUMENT, "Invalid token
-      // element type");
-      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT);
+      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                              "Invalid token element type");
     }
 
     iree_hal_buffer_t* buf = iree_hal_buffer_view_buffer(view);
@@ -250,8 +243,7 @@ class TokenizerModuleState final {
 
     std::string detok;
     if (!tokenizer->tokenizer->Decode(ids, &detok).ok()) {
-      // return iree_make_status(IREE_STATUS_UNKNOWN, "Failed to decode line");
-      return iree_make_status(IREE_STATUS_UNKNOWN);
+      return iree_make_status(IREE_STATUS_UNKNOWN, "Failed to decode line");
     }
 
     iree_vm_buffer_t* buffer = NULL;
@@ -276,16 +268,14 @@ class TokenizerModuleState final {
     if (!iree_hal_element_numerical_type_is_opaque(element_type) &&
         !iree_hal_element_numerical_type_is_integer(element_type) &&
         iree_hal_element_bit_count(element_type) != 64) {
-      // return iree_make_status(IREE_STATUS_INVALID_ARGUMENT, "Invalid token
-      // element type");
-      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT);
+      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                              "Invalid token element type");
     }
 
     iree_device_size_t size = iree_hal_buffer_view_byte_length(view);
     if (size != 8) {
-      // return iree_make_status(IREE_STATUS_INVALID_ARGUMENT, "Requires single
-      // token");
-      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT);
+      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                              "Requires single token");
     }
     iree_hal_buffer_t* buf = iree_hal_buffer_view_buffer(view);
     iree_hal_buffer_mapping_t mapping = {{0}};
@@ -347,11 +337,10 @@ extern "C" IREE_VM_DYNAMIC_MODULE_EXPORT iree_status_t create_tokenizer_module(
   // Ensure the version matches; the version will change if the VM module
   // interface changes and existing libraries are incompatible.
   if (max_version != IREE_VM_DYNAMIC_MODULE_VERSION_LATEST) {
-    // return iree_make_status(
-    //     IREE_STATUS_UNIMPLEMENTED,
-    //     "unsupported runtime version %u, module compiled with version %u",
-    //     max_version, IREE_VM_DYNAMIC_MODULE_VERSION_LATEST);
-    return iree_make_status(IREE_STATUS_UNIMPLEMENTED);
+    return iree_make_status(
+        IREE_STATUS_UNIMPLEMENTED,
+        "unsupported runtime version %u, module compiled with version %u",
+        max_version, IREE_VM_DYNAMIC_MODULE_VERSION_LATEST);
   }
 
 #if IREE_TRACING_FEATURES

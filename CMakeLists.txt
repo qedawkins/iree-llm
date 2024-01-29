@@ -1,8 +1,5 @@
-# Copyright 2023 The IREE Authors
-#
-# Licensed under the Apache License v2.0 with LLVM Exceptions.
-# See https://llvm.org/LICENSE.txt for license information.
-# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+# Copyright (c) 2023 Advanced Micro Devices, Inc. All rights reserved.
+# Licensed under the MIT License.
 
 cmake_minimum_required(VERSION 3.21...3.24)
 

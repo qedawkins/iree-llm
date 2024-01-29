@@ -2,7 +2,7 @@ from transformers import AutoTokenizer
 import iree.runtime as rt
 from pathlib import Path
 
-hf_auth_token = "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"
+hf_auth_token = "__Your_HF_Token__"
 hf_model_name = "meta-llama/Llama-2-7b-chat-hf"
 tokenizer = AutoTokenizer.from_pretrained(
     hf_model_name,

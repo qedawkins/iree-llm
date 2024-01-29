@@ -41,5 +41,11 @@ https://github.com/nod-ai/SHARK-Turbine/tree/main/examples/llama2_inference
 
 # License
 
-Copyright (c) 2023 Advanced Micro Devices, Inc. All rights reserved.
-Licensed under the MIT License.
+Note: This repository is being developed for inclusion in the iree project
+in some form.
+
+Copyright 2024 The IREE Authors
+
+Licensed under the Apache License v2.0 with LLVM Exceptions.
+See https://llvm.org/LICENSE.txt for license information.
+SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
